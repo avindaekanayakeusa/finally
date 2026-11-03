@@ -1,6 +1,6 @@
 # Market Data Backend — Summary
 
-**Status:** Complete, tested, reviewed, all issues resolved.
+**Status:** Complete, tested, reviewed. Updated to design v2 (`planning/MARKET_DATA_DESIGN.md`), all §15 change-list items applied except #5 (app layer, owned by the backend/DB work).
 
 ## What Was Built
 
@@ -25,14 +25,14 @@ MarketDataSource (ABC)
 
 | File | Purpose |
 |------|---------|
-| `models.py` | `PriceUpdate` — immutable frozen dataclass (ticker, price, previous_price, timestamp, change, direction) |
+| `models.py` | `PriceUpdate` — immutable frozen dataclass (ticker, price, previous_price, timestamp, session_open; change, direction, day_change, day_change_percent); `normalize_ticker()` |
 | `interface.py` | `MarketDataSource` — abstract base class defining `start/stop/add_ticker/remove_ticker/get_tickers` |
-| `cache.py` | `PriceCache` — thread-safe price store with version counter for SSE change detection |
+| `cache.py` | `PriceCache` — thread-safe price store with version counter and atomic `snapshot()` for SSE change detection |
 | `seed_prices.py` | Realistic seed prices, per-ticker GBM params (drift/volatility), correlation groups |
 | `simulator.py` | `GBMSimulator` (Geometric Brownian Motion with Cholesky-correlated moves) + `SimulatorDataSource` |
-| `massive_client.py` | `MassiveDataSource` — REST polling client for Polygon.io via the `massive` package |
-| `factory.py` | `create_market_data_source()` — selects simulator or Massive based on `MASSIVE_API_KEY` env var |
-| `stream.py` | `create_stream_router()` — FastAPI SSE endpoint factory using version-based change detection |
+| `massive_client.py` | `parse_snapshot()` + `MassiveDataSource` — REST polling client (ns timestamps, price fallbacks, `prev_day.close` as session open, exponential backoff, immediate poll on add) |
+| `factory.py` | `create_market_data_source()` — selects simulator or Massive based on `MASSIVE_API_KEY`; `MASSIVE_POLL_INTERVAL` sets the poll interval |
+| `stream.py` | `create_stream_router()` / `generate_price_events()` — SSE endpoint with version-based change detection and 15 s heartbeat |
 
 ### Key Design Decisions
 
@@ -44,18 +44,17 @@ MarketDataSource (ABC)
 
 ## Test Suite
 
-**73 tests, all passing.** 6 test modules in `backend/tests/market/`.
+**136 tests, all passing.** 7 test modules in `backend/tests/market/`. Overall coverage: 98%.
 
-| Module | Tests | Coverage |
-|--------|-------|----------|
-| test_models.py | 11 | models.py: 100% |
-| test_cache.py | 13 | cache.py: 100% |
-| test_simulator.py | 17 | simulator.py: 98% |
-| test_simulator_source.py | 10 | (integration tests) |
-| test_factory.py | 7 | factory.py: 100% |
-| test_massive.py | 13 | massive_client.py: 56% (expected — API methods mocked) |
-
-Overall coverage: 84%.
+| Module | Covers |
+|--------|--------|
+| test_models.py | `PriceUpdate` (tick + daily change), `normalize_ticker` |
+| test_cache.py | cache semantics, `session_open` carry-forward, `snapshot()`, remove/version, concurrency |
+| test_simulator.py | GBM maths, seeded determinism, Cholesky (50 tickers + fallback), empirical correlation, shocks |
+| test_simulator_source.py | async lifecycle, normalization/dedupe, session open in cache |
+| test_factory.py | source selection, `MASSIVE_POLL_INTERVAL` parsing |
+| test_massive.py | `parse_snapshot` against real SDK `TickerSnapshot` models, polling, backoff, in-flight removal guard |
+| test_stream.py | SSE frames, dedupe, heartbeat, removal frames, router re-entrancy |
 
 ## Code Review & Fixes Applied
 

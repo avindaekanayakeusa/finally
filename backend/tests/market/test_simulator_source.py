@@ -136,3 +136,58 @@ class TestSimulatorDataSource:
         # Just verify it starts and stops cleanly
         await asyncio.sleep(0.2)
         await source.stop()
+
+
+@pytest.mark.asyncio
+class TestSimulatorDataSourceV2:
+    """Behaviour added in design v2."""
+
+    async def test_tickers_normalized_and_deduped(self):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=10)
+        await source.start(["aapl", " AAPL ", "msft"])
+        await source.add_ticker(" pypl ")
+        assert source.get_tickers() == ["AAPL", "MSFT", "PYPL"]
+        assert "PYPL" in cache
+        await source.remove_ticker("pypl")
+        assert "PYPL" not in cache
+        assert "PYPL" not in source.get_tickers()
+        await source.stop()
+
+    async def test_invalid_ticker_rejected(self):
+        source = SimulatorDataSource(price_cache=PriceCache(), update_interval=10)
+        await source.start([])
+        with pytest.raises(ValueError):
+            await source.add_ticker("$$$")
+        await source.stop()
+
+    async def test_session_open_seeded_and_carried(self):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.02)
+        await source.start(["AAPL"])
+        assert cache.get("AAPL").session_open == 190.0
+        await asyncio.sleep(0.1)
+        assert cache.get("AAPL").session_open == 190.0
+        assert cache.get("AAPL").day_change_percent is not None
+        await source.stop()
+
+    async def test_add_existing_ticker_does_not_reseed(self):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=10)
+        await source.start(["AAPL"])
+        v = cache.version
+        await source.add_ticker("AAPL")
+        assert cache.version == v
+        await source.stop()
+
+    async def test_seeded_rng_is_used(self):
+        import numpy as np
+
+        c1, c2 = PriceCache(), PriceCache()
+        s1 = SimulatorDataSource(c1, update_interval=10, rng=np.random.default_rng(9))
+        s2 = SimulatorDataSource(c2, update_interval=10, rng=np.random.default_rng(9))
+        await s1.start(["ZZZ"])
+        await s2.start(["ZZZ"])
+        assert c1.get_price("ZZZ") == c2.get_price("ZZZ")
+        await s1.stop()
+        await s2.stop()

@@ -101,3 +101,53 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+
+class TestPriceCacheV2:
+    """Behaviour added in design v2."""
+
+    def test_timestamp_zero_is_respected(self):
+        assert PriceCache().update("AAPL", 1.0, timestamp=0.0).timestamp == 0.0
+
+    def test_remove_bumps_version(self):
+        c = PriceCache()
+        c.update("AAPL", 1.0)
+        v = c.version
+        c.remove("AAPL")
+        assert c.version == v + 1
+        c.remove("AAPL")  # no-op remove doesn't bump
+        assert c.version == v + 1
+
+    def test_session_open_stored_and_carried_forward(self):
+        c = PriceCache()
+        assert c.update("AAPL", 190.0, session_open=189.0).session_open == 189.0
+        assert c.update("AAPL", 191.0).session_open == 189.0
+        assert c.update("AAPL", 192.0, session_open=191.5).session_open == 191.5
+
+    def test_session_open_defaults_to_none(self):
+        assert PriceCache().update("AAPL", 190.0).session_open is None
+
+    def test_snapshot_is_atomic_copy(self):
+        c = PriceCache()
+        c.update("AAPL", 190.0)
+        version, prices = c.snapshot()
+        assert version == c.version
+        assert set(prices) == {"AAPL"}
+        prices.clear()
+        assert "AAPL" in c
+
+    def test_concurrent_writers(self):
+        import threading
+
+        c = PriceCache()
+
+        def write():
+            for i in range(1000):
+                c.update("AAPL", float(i + 1))
+
+        threads = [threading.Thread(target=write) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert c.version == 8000
