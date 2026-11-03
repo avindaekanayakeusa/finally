@@ -2,6 +2,15 @@
 
 Reference documentation for the Massive (formerly Polygon.io) REST API as used in FinAlly.
 
+> **⚠ SDK correction (see `planning/MARKET_DATA_DESIGN.md` §9.1–9.2).** Several attribute names in this
+> archived reference do not exist in the real `massive` SDK:
+> - `last_trade.timestamp` → use `last_trade.sip_timestamp` (**nanoseconds**, not milliseconds); fallback `snap.updated` (ns)
+> - `day.previous_close` → use `prev_day.close`
+> - `day.change_percent` → use `todays_change_percent` (and `todays_change`) on the snapshot itself
+>
+> `day` is a plain `Agg` (open/high/low/close/volume/vwap/timestamp). The implementation in
+> `backend/app/market/massive_client.py` (`parse_snapshot`) uses the correct fields.
+
 ## Overview
 
 - **Base URL**: `https://api.massive.com` (legacy `https://api.polygon.io` still supported)

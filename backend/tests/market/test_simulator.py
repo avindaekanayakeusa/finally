@@ -1,7 +1,19 @@
 """Tests for GBMSimulator."""
 
-from app.market.seed_prices import SEED_PRICES
+import math
+from unittest.mock import patch
+
+import numpy as np
+
+from app.market.seed_prices import (
+    CROSS_GROUP_CORR,
+    DEFAULT_PARAMS,
+    SEED_PRICES,
+    UNKNOWN_SEED_RANGE,
+)
 from app.market.simulator import GBMSimulator
+
+DEFAULTS = list(SEED_PRICES)
 
 
 class TestGBMSimulator:
@@ -129,3 +141,117 @@ class TestGBMSimulator:
         if '.' in price_str:
             decimal_part = price_str.split('.')[1]
             assert len(decimal_part) <= 2
+
+
+class TestGBMSimulatorV2:
+    """Determinism, session_open, Cholesky robustness, statistical properties."""
+
+    def test_deterministic_with_seeded_rng(self):
+        a = GBMSimulator(DEFAULTS, rng=np.random.default_rng(1))
+        b = GBMSimulator(DEFAULTS, rng=np.random.default_rng(1))
+        assert [a.step() for _ in range(50)] == [b.step() for _ in range(50)]
+
+    def test_different_seeds_differ(self):
+        a = GBMSimulator(DEFAULTS, rng=np.random.default_rng(1))
+        b = GBMSimulator(DEFAULTS, rng=np.random.default_rng(2))
+        assert a.step() != b.step()
+
+    def test_unknown_seed_deterministic_with_rng(self):
+        a = GBMSimulator(["ZZZZ"], rng=np.random.default_rng(3))
+        b = GBMSimulator(["ZZZZ"], rng=np.random.default_rng(3))
+        assert a.get_price("ZZZZ") == b.get_price("ZZZZ")
+        lo, hi = UNKNOWN_SEED_RANGE
+        assert lo <= a.get_price("ZZZZ") <= hi
+
+    def test_session_open_is_seed(self):
+        sim = GBMSimulator(["AAPL"])
+        for _ in range(10):
+            sim.step()
+        assert sim.get_session_open("AAPL") == SEED_PRICES["AAPL"]
+
+    def test_session_open_for_unknown_matches_initial_price(self):
+        sim = GBMSimulator(["ZZZZ"])
+        assert sim.get_session_open("ZZZZ") == sim.get_price("ZZZZ")
+
+    def test_session_open_cleared_on_remove(self):
+        sim = GBMSimulator(["AAPL"])
+        sim.remove_ticker("AAPL")
+        assert sim.get_session_open("AAPL") is None
+        assert sim.get_tickers() == []
+
+    def test_internal_price_full_precision(self):
+        sim = GBMSimulator(["AAPL"], rng=np.random.default_rng(0))
+        out = sim.step()["AAPL"]
+        assert out == round(sim.get_price("AAPL"), 2)
+        assert sim.get_price("AAPL") != out  # internal state not rounded
+
+    def test_params_are_copied_not_shared(self):
+        sim = GBMSimulator(["ZZZZ"])
+        sim._params["ZZZZ"]["sigma"] = 99.0
+        assert DEFAULT_PARAMS["sigma"] != 99.0
+
+    def test_cholesky_ok_for_defaults_plus_many_unknowns(self):
+        sim = GBMSimulator(DEFAULTS + [f"X{i}" for i in range(40)])
+        assert sim._cholesky is not None and sim._cholesky.shape == (50, 50)
+
+    def test_cholesky_rebuilds_on_remove(self):
+        sim = GBMSimulator(["AAPL", "GOOGL", "MSFT"])
+        assert sim._cholesky.shape == (3, 3)
+        sim.remove_ticker("GOOGL")
+        assert sim._cholesky.shape == (2, 2)
+        sim.remove_ticker("MSFT")
+        assert sim._cholesky is None
+
+    def test_cholesky_failure_falls_back_to_independent(self):
+        with patch.object(np.linalg, "cholesky", side_effect=np.linalg.LinAlgError("bad")):
+            sim = GBMSimulator(["AAPL", "GOOGL"])
+        assert sim._cholesky is None
+        assert set(sim.step()) == {"AAPL", "GOOGL"}
+
+    def test_pairwise_correlation_unknown_tickers(self):
+        assert GBMSimulator._pairwise_correlation("ZZZZ", "AAPL") == CROSS_GROUP_CORR
+        assert GBMSimulator._pairwise_correlation("ZZZZ", "YYYY") == CROSS_GROUP_CORR
+
+    def test_empirical_correlation_tech_vs_cross(self):
+        sim = GBMSimulator(["AAPL", "MSFT", "JPM"], event_probability=0, rng=np.random.default_rng(0))
+        prev = {t: sim.get_price(t) for t in sim.get_tickers()}
+        rets = {t: [] for t in prev}
+        for _ in range(20_000):
+            sim.step()
+            for t in prev:
+                p = sim.get_price(t)
+                rets[t].append(np.log(p / prev[t]))
+                prev[t] = p
+        tech = np.corrcoef(rets["AAPL"], rets["MSFT"])[0, 1]
+        cross = np.corrcoef(rets["AAPL"], rets["JPM"])[0, 1]
+        assert 0.55 < tech < 0.65
+        assert 0.25 < cross < 0.35
+
+    def test_log_return_volatility_matches_sigma(self):
+        """Per-tick log-return std ~= sigma * sqrt(dt)."""
+        sim = GBMSimulator(["TSLA"], event_probability=0, rng=np.random.default_rng(5))
+        prev = sim.get_price("TSLA")
+        rets = []
+        for _ in range(20_000):
+            sim.step()
+            p = sim.get_price("TSLA")
+            rets.append(math.log(p / prev))
+            prev = p
+        expected = 0.50 * math.sqrt(GBMSimulator.DEFAULT_DT)
+        assert abs(np.std(rets) / expected - 1) < 0.05
+
+    def test_shock_events_apply_2_to_5_percent(self):
+        """With event_probability=1 and ~zero diffusion, each step is a pure 2-5% shock."""
+        sim = GBMSimulator(["AAPL"], dt=1e-18, event_probability=1.0, rng=np.random.default_rng(9))
+        for _ in range(200):
+            before = sim.get_price("AAPL")
+            sim.step()
+            move = abs(sim.get_price("AAPL") / before - 1)
+            assert 0.02 - 1e-9 <= move <= 0.05 + 1e-9
+
+    def test_no_shocks_when_probability_zero(self):
+        sim = GBMSimulator(["AAPL"], event_probability=0.0, rng=np.random.default_rng(9))
+        for _ in range(1000):
+            before = sim.get_price("AAPL")
+            sim.step()
+            assert abs(sim.get_price("AAPL") / before - 1) < 0.01

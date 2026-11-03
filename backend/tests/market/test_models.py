@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.market.models import PriceUpdate
+from app.market.models import PriceUpdate, normalize_ticker
 
 
 class TestPriceUpdate:
@@ -75,3 +75,50 @@ class TestPriceUpdate:
 
         with pytest.raises(AttributeError):
             update.price = 200.00  # Should raise error
+
+
+class TestDayChange:
+    """Daily change fields driven by session_open."""
+
+    def test_day_change_fields(self):
+        u = PriceUpdate("AAPL", price=191.20, previous_price=191.05, timestamp=1.0, session_open=190.00)
+        assert u.direction == "up"
+        assert u.change == 0.15
+        assert u.day_change == 1.2
+        assert u.day_change_percent == 0.6316
+
+    def test_day_change_negative(self):
+        u = PriceUpdate("AAPL", price=95.0, previous_price=95.0, session_open=100.0)
+        assert u.day_change == -5.0
+        assert u.day_change_percent == -5.0
+
+    def test_day_change_none_without_session_open(self):
+        u = PriceUpdate("AAPL", price=190.0, previous_price=190.0)
+        assert u.session_open is None
+        assert u.day_change is None and u.day_change_percent is None
+
+    def test_day_change_none_when_session_open_zero(self):
+        u = PriceUpdate("AAPL", price=190.0, previous_price=190.0, session_open=0.0)
+        assert u.day_change is None and u.day_change_percent is None
+
+    def test_to_dict_includes_daily_fields(self):
+        d = PriceUpdate("AAPL", 101.0, 100.0, timestamp=5.0, session_open=100.0).to_dict()
+        assert d["session_open"] == 100.0
+        assert d["day_change"] == 1.0
+        assert d["day_change_percent"] == 1.0
+
+
+class TestNormalizeTicker:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [("aapl", "AAPL"), ("  msft ", "MSFT"), ("BRK.B", "BRK.B"), ("brk-a", "BRK-A"), ("V", "V")],
+    )
+    def test_valid(self, raw, expected):
+        assert normalize_ticker(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw", ["", "   ", "$$$", "1ABC", "AB CD", "TOOLONGTICKER", ".A", None]
+    )
+    def test_invalid(self, raw):
+        with pytest.raises(ValueError):
+            normalize_ticker(raw)
