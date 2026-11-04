@@ -20,7 +20,7 @@ fi
 
 docker run -d --name "$CONTAINER" \
   -v finally-data:/app/db \
-  -p 8000:8000 \
+  -p 127.0.0.1:8000:8000 \
   ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
   "$IMAGE" >/dev/null
 
