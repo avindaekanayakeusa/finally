@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Request
@@ -14,74 +15,71 @@ from .cache import PriceCache
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/stream", tags=["streaming"])
+SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",  # disable proxy buffering (nginx etc.)
+}
 
 
-def create_stream_router(price_cache: PriceCache) -> APIRouter:
-    """Create the SSE streaming router with a reference to the price cache.
+def create_stream_router(
+    price_cache: PriceCache,
+    interval: float = 0.5,
+    heartbeat: float = 15.0,
+) -> APIRouter:
+    """Build a fresh router exposing ``GET /api/stream/prices``.
 
-    This factory pattern lets us inject the PriceCache without globals.
+    A new APIRouter is created per call, so calling this more than once never
+    registers duplicate routes.
     """
+    router = APIRouter(prefix="/api/stream", tags=["streaming"])
 
     @router.get("/prices")
     async def stream_prices(request: Request) -> StreamingResponse:
-        """SSE endpoint for live price updates.
-
-        Streams all tracked ticker prices every ~500ms. The client connects
-        with EventSource and receives events in the format:
-
-            data: {"AAPL": {"ticker": "AAPL", "price": 190.50, ...}, ...}
-
-        Includes a retry directive so the browser auto-reconnects on
-        disconnection (EventSource built-in behavior).
-        """
+        """Stream full price snapshots (object keyed by ticker) as SSE frames."""
         return StreamingResponse(
-            _generate_events(price_cache, request),
+            generate_price_events(price_cache, request, interval, heartbeat),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # Disable nginx buffering if proxied
-            },
+            headers=SSE_HEADERS,
         )
 
     return router
 
 
-async def _generate_events(
+async def generate_price_events(
     price_cache: PriceCache,
     request: Request,
     interval: float = 0.5,
+    heartbeat: float = 15.0,
 ) -> AsyncGenerator[str, None]:
-    """Async generator that yields SSE-formatted price events.
+    """Yield SSE frames until the client disconnects.
 
-    Sends all prices every `interval` seconds. Stops when the client
-    disconnects (detected via request.is_disconnected()).
+    - First frame: ``retry: 1000`` (browser reconnects 1s after a drop).
+    - A ``data:`` frame with the full snapshot whenever the cache version
+      changes (checked every ``interval`` seconds). An empty cache sends
+      ``data: {}`` once.
+    - A ``: ping`` comment after ``heartbeat`` seconds without data.
     """
-    # Tell the client to retry after 1 second if the connection drops
+    client = request.client.host if request.client else "unknown"
+    logger.info("SSE connected: %s", client)
     yield "retry: 1000\n\n"
 
     last_version = -1
-    client_ip = request.client.host if request.client else "unknown"
-    logger.info("SSE client connected: %s", client_ip)
-
+    last_sent = time.monotonic()
     try:
-        while True:
-            # Check for client disconnect
-            if await request.is_disconnected():
-                logger.info("SSE client disconnected: %s", client_ip)
-                break
-
-            current_version = price_cache.version
-            if current_version != last_version:
-                last_version = current_version
-                prices = price_cache.get_all()
-
-                if prices:
-                    data = {ticker: update.to_dict() for ticker, update in prices.items()}
-                    payload = json.dumps(data)
-                    yield f"data: {payload}\n\n"
-
+        while not await request.is_disconnected():
+            version, prices = price_cache.snapshot()
+            now = time.monotonic()
+            if version != last_version:
+                last_version = version
+                payload = {t: u.to_dict() for t, u in prices.items()}
+                yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                last_sent = now
+            elif now - last_sent >= heartbeat:
+                yield ": ping\n\n"
+                last_sent = now
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
-        logger.info("SSE stream cancelled for: %s", client_ip)
+        pass
+    finally:
+        logger.info("SSE disconnected: %s", client)

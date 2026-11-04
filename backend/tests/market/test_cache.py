@@ -1,5 +1,8 @@
 """Tests for PriceCache."""
 
+import threading
+from unittest.mock import patch
+
 from app.market.cache import PriceCache
 
 
@@ -101,3 +104,70 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+
+class TestPriceCacheV2:
+    """session_open, snapshot(), version semantics, thread safety."""
+
+    def test_timestamp_zero_is_respected(self):
+        assert PriceCache().update("AAPL", 1.0, timestamp=0.0).timestamp == 0.0
+
+    def test_default_timestamp_is_now(self):
+        with patch("app.market.cache.time.time", return_value=123.0):
+            assert PriceCache().update("AAPL", 1.0).timestamp == 123.0
+
+    def test_remove_bumps_version_only_when_present(self):
+        c = PriceCache()
+        c.update("AAPL", 1.0)
+        v = c.version
+        c.remove("AAPL")
+        assert c.version == v + 1
+        c.remove("AAPL")
+        assert c.version == v + 1  # no-op remove doesn't bump
+
+    def test_session_open_stored_and_rounded(self):
+        u = PriceCache().update("AAPL", 190.0, session_open=189.004)
+        assert u.session_open == 189.0
+
+    def test_session_open_carried_forward(self):
+        c = PriceCache()
+        c.update("AAPL", 190.0, session_open=189.0)
+        assert c.update("AAPL", 191.0).session_open == 189.0
+
+    def test_session_open_can_be_replaced(self):
+        c = PriceCache()
+        c.update("AAPL", 190.0, session_open=189.0)
+        assert c.update("AAPL", 191.0, session_open=190.5).session_open == 190.5
+
+    def test_session_open_defaults_to_none(self):
+        assert PriceCache().update("AAPL", 190.0).session_open is None
+
+    def test_snapshot_returns_version_and_copy(self):
+        c = PriceCache()
+        c.update("AAPL", 190.0)
+        c.update("MSFT", 420.0)
+        version, prices = c.snapshot()
+        assert version == 2
+        assert set(prices) == {"AAPL", "MSFT"}
+        prices.clear()
+        assert len(c) == 2
+
+    def test_get_all_returns_copy(self):
+        c = PriceCache()
+        c.update("AAPL", 190.0)
+        c.get_all().clear()
+        assert "AAPL" in c
+
+    def test_concurrent_writers(self):
+        c = PriceCache()
+
+        def write():
+            for i in range(1000):
+                c.update("AAPL", float(i + 1))
+
+        threads = [threading.Thread(target=write) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert c.version == 8000

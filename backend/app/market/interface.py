@@ -8,50 +8,43 @@ from abc import ABC, abstractmethod
 class MarketDataSource(ABC):
     """Contract for market data providers.
 
-    Implementations push price updates into a shared PriceCache on their own
-    schedule. Downstream code never calls the data source directly for prices —
-    it reads from the cache.
+    Implementations push PriceUpdates into a shared PriceCache on their own
+    schedule. Nothing downstream calls a source for prices; it reads the cache.
 
     Lifecycle:
         source = create_market_data_source(cache)
         await source.start(["AAPL", "GOOGL", ...])
-        # ... app runs ...
-        await source.add_ticker("TSLA")
-        await source.remove_ticker("GOOGL")
-        # ... app shutting down ...
-        await source.stop()
+        await source.add_ticker("PYPL")      # any time
+        await source.remove_ticker("GOOGL")  # any time
+        await source.stop()                  # on shutdown; idempotent
+
+    Ticker arguments are normalized with normalize_ticker() by the
+    implementation, so callers may pass "pypl" or " PYPL ".
     """
 
     @abstractmethod
     async def start(self, tickers: list[str]) -> None:
-        """Begin producing price updates for the given tickers.
+        """Start the background task. Call exactly once.
 
-        Starts a background task that periodically writes to the PriceCache.
-        Must be called exactly once. Calling start() twice is undefined behavior.
+        Implementations SHOULD populate the cache before returning when they
+        can (simulator: seed prices; Massive: one immediate poll), so the first
+        SSE frame already has data.
         """
 
     @abstractmethod
     async def stop(self) -> None:
-        """Stop the background task and release resources.
-
-        Safe to call multiple times. After stop(), the source will not write
-        to the cache again.
-        """
+        """Cancel the background task. Safe to call repeatedly. After it
+        returns, the source never writes to the cache again."""
 
     @abstractmethod
     async def add_ticker(self, ticker: str) -> None:
-        """Add a ticker to the active set. No-op if already present.
-
-        The next update cycle will include this ticker.
-        """
+        """Start tracking a ticker. No-op if already tracked."""
 
     @abstractmethod
     async def remove_ticker(self, ticker: str) -> None:
-        """Remove a ticker from the active set. No-op if not present.
-
-        Also removes the ticker from the PriceCache.
-        """
+        """Stop tracking a ticker and remove it from the cache. No-op if
+        not tracked."""
 
     @abstractmethod
     def get_tickers(self) -> list[str]:
-        """Return the current list of actively tracked tickers."""
+        """Currently tracked tickers, in insertion order."""
