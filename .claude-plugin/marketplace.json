@@ -1,0 +1,17 @@
+{
+    "name": "avinda-tools",
+    "owner": {
+        "name": "Avinda",
+        "email": "avindaekanayake@rocketmail.com"
+    },
+    "plugins": [
+        {
+            "name": "independent-reviewer",
+            "source": "./Independent reviewer",
+            "description": "Carry out an independent review of all changes since last commit",
+            "author": {
+                "name": "Avinda"
+            }
+        }
+    ]
+}
