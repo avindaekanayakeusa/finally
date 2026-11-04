@@ -2,27 +2,39 @@
 
 An AI-powered trading workstation: live market data streaming, a simulated portfolio, and an LLM chat assistant that can analyze positions and execute trades in natural language. Think Bloomberg terminal with an AI copilot.
 
-Built entirely by coding agents as the capstone project for an agentic AI coding course. Agents coordinate through the docs in `planning/`.
+Built entirely by coding agents as the capstone project for an agentic AI coding course. Agents coordinate through the docs in `planning/`. The full specification is in [planning/PLAN.md](planning/PLAN.md).
 
-## Status
+## Quick Start
 
-| Component | Status |
-|---|---|
-| Market data (GBM simulator, Massive API client, price cache, SSE stream) | Done |
-| Backend API (portfolio, trades, watchlist, chat, database) | Planned |
-| Frontend (Next.js) | Planned |
-| Docker image, start/stop scripts, E2E tests | Planned |
+Requires Docker.
 
-The full specification is in [planning/PLAN.md](planning/PLAN.md).
+```bash
+cp .env.example .env        # add OPENAI_API_KEY, or set LLM_MOCK=true
+./scripts/start_mac.sh      # macOS/Linux (add --build to rebuild)
+./scripts/stop_mac.sh
+```
 
-## Features (target)
+```powershell
+.\scripts\start_windows.ps1   # Windows (add -Build to rebuild, -NoBrowser to skip opening)
+.\scripts\stop_windows.ps1
+```
+
+Open http://localhost:8000. Data persists in the `finally-data` Docker volume.
+
+Manual equivalent:
+
+```bash
+docker build -t finally .
+docker run -d --name finally -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+```
+
+## Features
 
 - Live price streaming over SSE with green/red flash animations and sparklines
 - Simulated portfolio: $10k virtual cash, market orders, instant fills
 - Portfolio heatmap, P&L chart and positions table
 - AI chat assistant that analyzes holdings and auto-executes trades
 - Watchlist managed manually or through the AI
-- Dark, data-dense terminal aesthetic
 
 ## Architecture
 
@@ -34,53 +46,35 @@ One Docker container on port 8000:
 - **AI**: LiteLLM to OpenAI `gpt-5-mini` with structured outputs
 - **Market data**: built-in GBM simulator by default, or the Massive (Polygon.io) API
 
-## Try What Exists Today
-
-Requires [uv](https://docs.astral.sh/uv/).
-
-```bash
-cd backend
-uv sync --extra dev
-uv run market_data_demo.py   # live terminal dashboard of simulated prices
-uv run pytest                # market data unit tests
-```
-
 ## Environment Variables
 
-Set in `.env` at the project root.
+Set in `.env` at the project root (see `.env.example`).
 
 | Variable | Required | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | For live chat | Not needed when `LLM_MOCK=true` |
 | `MASSIVE_API_KEY` | No | Real market data; omit to use the simulator |
+| `MASSIVE_POLL_INTERVAL` | No | Massive poll interval in seconds (default 15) |
 | `LLM_MOCK` | No | `true` for deterministic mock LLM responses (testing, no key needed) |
 
-## Running with Docker (once built)
+## Development
 
 ```bash
-docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
-# open http://localhost:8000
+cd backend && uv sync --extra dev && uv run pytest
+cd frontend && npm ci && npm run build
 ```
 
 ## Project Structure
 
 ```
 finally/
-├── backend/     # FastAPI uv project (market data done; see backend/README.md)
-├── frontend/    # Next.js app (planned)
-├── planning/    # PLAN.md spec, reviews, archived design docs
-├── test/        # Playwright E2E tests (planned)
-├── scripts/     # Docker start/stop helpers (planned)
-├── db/          # SQLite volume mount at runtime
-└── .claude/     # Agent tooling: skills, subagents, commands, hooks
+├── backend/     # FastAPI uv project
+├── frontend/    # Next.js app (static export)
+├── planning/    # PLAN.md spec and agent docs
+├── test/        # Playwright E2E tests
+├── scripts/     # Docker start/stop helpers
+└── db/          # SQLite volume mount at runtime
 ```
-
-## Agent Tooling
-
-- `.claude/skills/openai-llm/` explains how to call OpenAI through LiteLLM
-- `.claude/agents/change-reviewer.md` is a subagent that has Codex review uncommitted changes
-- `.claude/settings.json` has a Stop hook that runs a Codex review into `planning/REVIEW.md` after each Claude response
 
 ## License
 
